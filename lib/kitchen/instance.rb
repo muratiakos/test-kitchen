@@ -202,7 +202,6 @@ module Kitchen
     # @see Driver::LoginCommand
     # @see Driver::Base#login_command
     def login
-      require 'pry';binding.pry
       login_command = driver.login_command(state_file.read)
       cmd, *args = login_command.cmd_array
       options = login_command.options
