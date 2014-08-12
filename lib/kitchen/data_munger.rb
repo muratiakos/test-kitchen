@@ -59,7 +59,6 @@ module Kitchen
         set_kitchen_config_at!(bdata, :kitchen_root)
         set_kitchen_config_at!(bdata, :test_base_path)
         set_kitchen_config_at!(bdata, :log_level)
-        override_busser_guest_param!(bdata, driver_data_for(suite, platform))
       end
     end
 
@@ -83,6 +82,22 @@ module Kitchen
     # @return [Array<Hash>] an Array of Hashes
     def platform_data
       data.fetch(:platforms, [])
+    end
+
+    # Generate a new Hash of configuration data that can be used to construct
+    # a new Transport object.
+    #
+    # @param suite [String] a suite name
+    # @param platform [String] a platform name
+    # @return [Hash] a new configuration Hash that can be used to construct a
+    #   new Transport
+    def transport_data_for(suite, platform)
+      merged_data_for(:transport, suite, platform).tap do |tdata|
+        set_kitchen_config_at!(tdata, :kitchen_root)
+        set_kitchen_config_at!(tdata, :test_base_path)
+        set_kitchen_config_at!(tdata, :log_level)
+        combine_arrays!(tdata, :run_list, :platform, :suite)
+      end
     end
 
     # Generate a new Hash of configuration data that can be used to construct
@@ -117,16 +132,6 @@ module Kitchen
     # @return [Hash] the Test Kitchen-provided configuration hash
     # @api private
     attr_reader :kitchen_config
-
-    def override_busser_guest_param!(root, driver)
-      if driver.has_key?(:guest)
-        case driver.fetch(:guest)
-        when ":windows"
-          root[:sudo] = false
-          root[:busser_bin] = "busser"
-        end
-      end
-    end
 
     def combine_arrays!(root, key, *namespaces)
       if root.key?(key)
