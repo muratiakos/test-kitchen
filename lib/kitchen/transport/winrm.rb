@@ -64,12 +64,26 @@ module Kitchen
       # @param command [String] The command to execute
       # @param shell[String] The destination file path on the guest
       # @return [Hash] Information about the STDOUT, STDERR and EXIT_CODE
-      def powershell(command)
-        run(command, :powershell)
+      def powershell(command, shell_id = nil)
+        if shell_id.nil?
+          run(command, :powershell)
+        else
+          command = command.encode('UTF-16LE', 'UTF-8')
+          command = Base64.strict_encode64(command)
+          command = "powershell -encodedCommand #{command}"
+          cmd(command, shell_id)
+        end
       end
 
-      def cmd(command)
-        run(command, :cmd)
+      def cmd(command, shell_id = nil)
+        if shell_id.nil?
+          run(command, :cmd, shell_id)
+        else
+          command_id = session.run_command(shell_id, command)
+          command_output = session.get_command_output(shell_id, command_id)
+          session.cleanup_command(shell_id, command_id)
+          command_output
+        end
       end
 
       def wql(query)
@@ -81,14 +95,17 @@ module Kitchen
         logger.info("Concurrent threads set to :max_threads => #{config[:max_threads]}")
         logger.debug("Upload: #{local} -> #{remote}")
         local = Array.new(1) { local } if local.is_a? String
+        shell_id = session.open_shell
         local.each do |path|
           if File.directory?(path)
-            upload_directory(path, remote)
+            upload_directory(shell_id, path, remote)
           else
-            upload_file(path, File.join(remote, File.basename(path)))
+            upload_file(shell_id, path, File.join(remote, File.basename(path)))
           end
         end
         wait_files_transfer
+      ensure
+        session.close_shell(shell_id)
       end
 
       # [Improvement] Adding Parallelism to improve upload time
@@ -313,15 +330,15 @@ module Kitchen
       #
       # @param [String] The source file path on the host
       # @param [String] The destination file path on the guest
-      def upload_file(local, remote)
+      def upload_file(shell_id, local, remote)
         logger.debug("Current Threads => #{active_threads}")
         wait_files_transfer if active_threads > config[:max_threads]
         @threads << Thread.new do
           Thread.current["isFileUpload"] = true
           logger.debug("Launched '#{remote}' Thread: #{Thread.current}")
-          if should_upload_file?(local, remote)
-            tmp_file_path = upload_to_temp_file(local)
-            decode_temp_file(tmp_file_path, remote)
+          if should_upload_file?(shell_id, local, remote)
+            tmp_file_path = upload_to_temp_file(shell_id, local)
+            decode_temp_file(shell_id, tmp_file_path, remote)
           else
             logger.debug("Up to date: #{remote}")
           end
@@ -334,7 +351,7 @@ module Kitchen
       # @param [String] The source file path on the host
       # @param [String] The destination file path on the guest
       # @return [Boolean] True if the file is missing or out of date
-      def should_upload_file?(local, remote)
+      def should_upload_file?(shell_id, local, remote)
         local_md5 = Digest::MD5.file(local).hexdigest
         command = <<-EOH
 $dest_file_path = [System.IO.Path]::GetFullPath('#{remote}')
@@ -356,19 +373,19 @@ if (Test-Path $dest_file_path) {
 }
 exit 1
         EOH
-        powershell(command)[:exitcode] == 1
+        powershell(command, shell_id)[:exitcode] == 1
       end
 
       # Uploads the given file to a new temp file on the guest
       #
       # @param [String] The source file path on the host
       # @return [String] The temp file path on the guest
-      def upload_to_temp_file(local)
+      def upload_to_temp_file(shell_id, local)
         tmp_file_path = File.join(guest_temp_dir, "winrm-upload-#{rand}")
         logger.debug("Uploading '#{local}' to temp file '#{tmp_file_path}'")
         base64_host_file = Base64.encode64(IO.binread(local)).gsub("\n", "")
         base64_host_file.chars.to_a.each_slice(8000 - tmp_file_path.size) do |chunk|
-          output = cmd("echo #{chunk.join} >> \"#{tmp_file_path}\"")
+          output = cmd("echo #{chunk.join} >> \"#{tmp_file_path}\"", shell_id)
           raise_upload_error_if_failed(output, local, tmp_file_path)
         end
         tmp_file_path
@@ -378,11 +395,11 @@ exit 1
       #
       # @param [String] The source file or directory path on the host
       # @param [String] The destination file or directory path on the host
-      def upload_directory(local, remote)
+      def upload_directory(shell_id, local, remote)
         glob_patt = File.join(local, "**/*")
         Dir.glob(glob_patt).select { |f| !File.directory?(f) }.each do |local_file_path|
           remote_file_path = remote_file_path(local, remote, local_file_path)
-          upload_file(local_file_path, remote_file_path)
+          upload_file(shell_id, local_file_path, remote_file_path)
         end
       end
 
@@ -391,9 +408,9 @@ exit 1
       #
       # @param [String] The source base64 encoded temp file path on the guest
       # @param [String] The destination file path on the guest
-      def decode_temp_file(local, remote)
+      def decode_temp_file(shell_id, local, remote)
         logger.debug("Decoding temp file '#{local}' to '#{remote}'")
-        output = powershell <<-EOH
+        command = <<-EOH
           $tmp_file_path = [System.IO.Path]::GetFullPath('#{local}')
           $dest_file_path = [System.IO.Path]::GetFullPath('#{remote}')
 
@@ -409,6 +426,7 @@ exit 1
           $bytes = [System.Convert]::FromBase64String($base64_string)
           [System.IO.File]::WriteAllBytes($dest_file_path, $bytes)
         EOH
+        output = powershell(command, shell_id)
         raise_upload_error_if_failed(output, local, remote)
       end
 
