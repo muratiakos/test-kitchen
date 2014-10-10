@@ -77,7 +77,7 @@ module Kitchen
 
       def cmd(command, shell_id = nil)
         if shell_id.nil?
-          run(command, :cmd, shell_id)
+          run(command, :cmd)
         else
           command_id = session.run_command(shell_id, command)
           command_output = session.get_command_output(shell_id, command_id)
