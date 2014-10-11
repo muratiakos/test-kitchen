@@ -31,6 +31,8 @@ require "logger"
 
 require "kitchen/errors"
 require "kitchen/login_command"
+require "zip"
+
 module Kitchen
 
   module Transport
@@ -92,7 +94,6 @@ module Kitchen
 
       # (see Base#upload!)
       def upload!(local, remote)
-        logger.info("Concurrent threads set to :max_threads => #{config[:max_threads]}")
         logger.debug("Upload: #{local} -> #{remote}")
         local = Array.new(1) { local } if local.is_a? String
         shell_id = session.open_shell
@@ -100,27 +101,11 @@ module Kitchen
           if File.directory?(path)
             upload_directory(shell_id, path, remote)
           else
-            upload_file(shell_id, path, File.join(remote, File.basename(path)))
+            upload_file(path, File.join(remote, File.basename(path)), shell_id)
           end
         end
-        wait_files_transfer
       ensure
         session.close_shell(shell_id)
-      end
-
-      # [Improvement] Adding Parallelism to improve upload time
-      #
-      # This method will wait until all the files have been transferred
-      def wait_files_transfer
-        @threads.each do |thr|
-          thr.join
-        end
-        @threads = Array.new
-      end
-
-      def active_threads
-        @threads = Array.new if @threads.nil?
-        @threads.size
       end
 
       # Convert a complex CLIXML Error to a human readable format
@@ -323,34 +308,12 @@ module Kitchen
         [endpoint, :plaintext, opts]
       end
 
-      # Uploads the given file, but only if the target file doesn't exist
-      # or its MD5 checksum doens't match the host's source checksum.
-      #
-      # [Improvement] Adding Parallelism to improve upload time
-      #
-      # @param [String] The source file path on the host
-      # @param [String] The destination file path on the guest
-      def upload_file_old(shell_id, local, remote)
-        logger.debug("Current Threads => #{active_threads}")
-        wait_files_transfer if active_threads > config[:max_threads]
-        @threads << Thread.new do
-          Thread.current["isFileUpload"] = true
-          logger.debug("Launched '#{remote}' Thread: #{Thread.current}")
-          if should_upload_file?(shell_id, local, remote)
-            tmp_file_path = upload_to_temp_file(shell_id, local)
-            decode_temp_file(shell_id, tmp_file_path, remote)
-          else
-            logger.debug("Up to date: #{remote}")
-          end
-          logger.debug("Finished '#{remote}' Thread: #{Thread.current}")
-        end
-      end
-
       def upload_file(local, remote, shell_id)
+        logger.debug("Upload: #{local} -> #{remote}")
+        remote = sanitize_path(remote, shell_id).strip
         if should_upload_file?(shell_id, local, remote)
-          remote = sanitize_path(remote, shell_id).strip
-          vm = vim.searchIndex.FindByIp(:ip => connection.hostname, :vmSearch => true)
           upload_to_temp_file(shell_id, local, remote)
+          decode_temp_file(shell_id, local, remote)
         end
       end
 
@@ -366,8 +329,7 @@ module Kitchen
           $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath("#{path}")
         EOH
 
-        cmd = powershell(command, shell_id)[:exitcode]
-        (cmd[:data].map {|out| out[:stdout]}).join
+        powershell(command, shell_id)[:data][0][:stdout]
       end
 
       # Checks to see if the target file on the guest is missing or out of date.
@@ -376,6 +338,7 @@ module Kitchen
       # @param [String] The destination file path on the guest
       # @return [Boolean] True if the file is missing or out of date
       def should_upload_file?(shell_id, local, remote)
+        logger.debug("comparing #{local} to #{remote}")
         local_md5 = Digest::MD5.file(local).hexdigest
         command = <<-EOH
 $dest_file_path = [System.IO.Path]::GetFullPath('#{remote}')
@@ -395,6 +358,7 @@ if (Test-Path $dest_file_path) {
     exit 0
   }
 }
+remove-item $dest_file_path -Force
 exit 1
         EOH
         powershell(command, shell_id)[:exitcode] == 1
@@ -448,17 +412,11 @@ exit 1
           $shellApplication = new-object -com shell.application 
           $zip_path = "$($env:systemDrive)#{remote_zip.gsub('/','\\')}"
 
-          $base64_string = Get-Content $zip_path
-          $bytes = [System.Convert]::FromBase64String($base64_string)
-          Remove-Item $zip_path -Force
-          [System.IO.File]::WriteAllBytes($zip_path, $bytes)
-
           $zipPackage = $shellApplication.NameSpace($zip_path) 
           $dest_path = "$($env:systemDrive)#{remote_zip.gsub('/','\\').gsub('.zip','')}"
           mkdir $dest_path -ErrorAction SilentlyContinue
           $destinationFolder = $shellApplication.NameSpace($dest_path) 
           $destinationFolder.CopyHere($zipPackage.Items(),0x10)
-          Remove-Item $zip_path
         EOH
 
         output = powershell(command, shell_id)
@@ -471,22 +429,16 @@ exit 1
       # @param [String] The source base64 encoded temp file path on the guest
       # @param [String] The destination file path on the guest
       def decode_temp_file(shell_id, local, remote)
-        logger.debug("Decoding temp file '#{local}' to '#{remote}'")
+        logger.debug("Decoding temp file '#{remote}'")
         command = <<-EOH
-          $tmp_file_path = [System.IO.Path]::GetFullPath('#{local}')
-          $dest_file_path = [System.IO.Path]::GetFullPath('#{remote}')
+          $tmp_file_path = [System.IO.Path]::GetFullPath('#{remote}')
 
-          if (Test-Path $dest_file_path) {
-            rm $dest_file_path
-          }
-          else {
-            $dest_dir = ([System.IO.Path]::GetDirectoryName($dest_file_path))
-            New-Item -ItemType directory -Force -Path $dest_dir
-          }
+          $dest_dir = ([System.IO.Path]::GetDirectoryName($tmp_file_path))
+          New-Item -ItemType directory -Force -Path $dest_dir
 
           $base64_string = Get-Content $tmp_file_path
           $bytes = [System.Convert]::FromBase64String($base64_string)
-          [System.IO.File]::WriteAllBytes($dest_file_path, $bytes)
+          [System.IO.File]::WriteAllBytes($tmp_file_path, $bytes)
         EOH
         output = powershell(command, shell_id)
         raise_upload_error_if_failed(output, local, remote)
