@@ -330,7 +330,7 @@ module Kitchen
       #
       # @param [String] The source file path on the host
       # @param [String] The destination file path on the guest
-      def upload_file(shell_id, local, remote)
+      def upload_file_old(shell_id, local, remote)
         logger.debug("Current Threads => #{active_threads}")
         wait_files_transfer if active_threads > config[:max_threads]
         @threads << Thread.new do
@@ -344,6 +344,30 @@ module Kitchen
           end
           logger.debug("Finished '#{remote}' Thread: #{Thread.current}")
         end
+      end
+
+      def upload_file(local, remote, shell_id)
+        if should_upload_file?(shell_id, local, remote)
+          remote = sanitize_path(remote, shell_id).strip
+          vm = vim.searchIndex.FindByIp(:ip => connection.hostname, :vmSearch => true)
+          upload_to_temp_file(shell_id, local, remote)
+        end
+      end
+
+      def sanitize_path(path, shell_id)
+        command = <<-EOH
+          $dest_file_path = [System.IO.Path]::GetFullPath('#{path}')
+
+          if (!(Test-Path $dest_file_path)) {
+            $dest_dir = ([System.IO.Path]::GetDirectoryName($dest_file_path))
+            New-Item -ItemType directory -Force -Path $dest_dir | Out-Null
+          }
+
+          $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath("#{path}")
+        EOH
+
+        cmd = powershell(command, shell_id)[:exitcode]
+        (cmd[:data].map {|out| out[:stdout]}).join
       end
 
       # Checks to see if the target file on the guest is missing or out of date.
@@ -380,15 +404,14 @@ exit 1
       #
       # @param [String] The source file path on the host
       # @return [String] The temp file path on the guest
-      def upload_to_temp_file(shell_id, local)
-        tmp_file_path = File.join(guest_temp_dir, "winrm-upload-#{rand}")
-        logger.debug("Uploading '#{local}' to temp file '#{tmp_file_path}'")
+      def upload_to_temp_file(shell_id, local, remote)
+        #tmp_file_path = File.join(guest_temp_dir, "winrm-upload-#{rand}")
+        logger.debug("Uploading '#{local}' to temp file '#{remote}'")
         base64_host_file = Base64.encode64(IO.binread(local)).gsub("\n", "")
-        base64_host_file.chars.to_a.each_slice(8000 - tmp_file_path.size) do |chunk|
-          output = cmd("echo #{chunk.join} >> \"#{tmp_file_path}\"", shell_id)
-          raise_upload_error_if_failed(output, local, tmp_file_path)
+        base64_host_file.chars.to_a.each_slice(8000 - remote.size) do |chunk|
+          output = cmd("echo #{chunk.join} >> \"#{remote}\"", shell_id)
+          raise_upload_error_if_failed(output, local, remote)
         end
-        tmp_file_path
       end
 
       # Recursively uploads the given directory from the host to the guest
@@ -396,11 +419,50 @@ exit 1
       # @param [String] The source file or directory path on the host
       # @param [String] The destination file or directory path on the host
       def upload_directory(shell_id, local, remote)
-        glob_patt = File.join(local, "**/*")
-        Dir.glob(glob_patt).select { |f| !File.directory?(f) }.each do |local_file_path|
-          remote_file_path = remote_file_path(local, remote, local_file_path)
-          upload_file(shell_id, local_file_path, remote_file_path)
+        zipped = zip_path(local)
+        return if !File.exist?(zipped)
+        remote_zip = File.join(remote, File.basename(zipped))
+        logger.debug("uploading #{zipped} to #{remote_zip}")
+        upload_file(zipped, remote_zip, shell_id)
+        extract_zip(remote_zip, local, shell_id)
+      end
+
+      def zip_path(path)
+        path.sub!(%r[/$],'')
+        archive = File.join(path,File.basename(path))+'.zip'
+        FileUtils.rm archive, :force=>true
+
+        Zip::File.open(archive, 'w') do |zipfile|
+          Dir["#{path}/**/**"].reject{|f|f==archive}.each do |file|
+            zipfile.add(file.sub(path+'/',''),file)
+          end
         end
+
+        archive
+      end
+
+
+      def extract_zip(remote_zip, local, shell_id)
+        logger.debug("extracting #{remote_zip} to #{remote_zip.gsub('/','\\').gsub('.zip','')}")
+        command = <<-EOH
+          $shellApplication = new-object -com shell.application 
+          $zip_path = "$($env:systemDrive)#{remote_zip.gsub('/','\\')}"
+
+          $base64_string = Get-Content $zip_path
+          $bytes = [System.Convert]::FromBase64String($base64_string)
+          Remove-Item $zip_path -Force
+          [System.IO.File]::WriteAllBytes($zip_path, $bytes)
+
+          $zipPackage = $shellApplication.NameSpace($zip_path) 
+          $dest_path = "$($env:systemDrive)#{remote_zip.gsub('/','\\').gsub('.zip','')}"
+          mkdir $dest_path -ErrorAction SilentlyContinue
+          $destinationFolder = $shellApplication.NameSpace($dest_path) 
+          $destinationFolder.CopyHere($zipPackage.Items(),0x10)
+          Remove-Item $zip_path
+        EOH
+
+        output = powershell(command, shell_id)
+        raise_upload_error_if_failed(output, local, remote_zip)
       end
 
       # Moves and decodes the given file temp file on the guest to its
