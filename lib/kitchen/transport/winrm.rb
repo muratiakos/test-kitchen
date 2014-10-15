@@ -398,7 +398,8 @@ exit 1
 
         Zip::File.open(archive, 'w') do |zipfile|
           Dir["#{path}/**/**"].reject{|f|f==archive}.each do |file|
-            zipfile.add(file.sub(path+'/',''),file)
+            entry = Zip::Entry.new(archive, file.sub(path+'/',''), nil, nil, nil, nil, nil, nil, ::Zip::DOSTime.new(2000))
+            zipfile.add(entry,file)
           end
         end
 
