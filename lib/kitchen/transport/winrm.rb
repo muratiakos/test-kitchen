@@ -45,7 +45,6 @@ module Kitchen
 
       default_config :shell, "powershell"
       default_config :sudo, false
-      default_config :max_threads, 2
 
       # (see Base#execute)
       def execute(command, shell = :powershell)
@@ -64,7 +63,7 @@ module Kitchen
       # specific shell without printing the output to the end user.
       #
       # @param command [String] The command to execute
-      # @param shell[String] The destination file path on the guest
+      # @param shell_id[String] The id of a shell instance to run the command from
       # @return [Hash] Information about the STDOUT, STDERR and EXIT_CODE
       def powershell(command, shell_id = nil)
         if shell_id.nil?
@@ -310,14 +309,14 @@ module Kitchen
 
       def upload_file(local, remote, shell_id)
         logger.debug("Upload: #{local} -> #{remote}")
-        remote = sanitize_path(remote, shell_id).strip
+        remote = full_remote_path(remote, shell_id)
         if should_upload_file?(shell_id, local, remote)
-          upload_to_temp_file(shell_id, local, remote)
-          decode_temp_file(shell_id, local, remote)
+          upload_to_remote(shell_id, local, remote)
+          decode_remote_file(shell_id, local, remote)
         end
       end
 
-      def sanitize_path(path, shell_id)
+      def full_remote_path(path, shell_id)
         command = <<-EOH
           $dest_file_path = [System.IO.Path]::GetFullPath('#{path}')
 
@@ -329,11 +328,12 @@ module Kitchen
           $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath("#{path}")
         EOH
 
-        powershell(command, shell_id)[:data][0][:stdout]
+        powershell(command, shell_id)[:data][0][:stdout].chomp
       end
 
       # Checks to see if the target file on the guest is missing or out of date.
       #
+      # @param [String] The id of a shell instance to run the command from
       # @param [String] The source file path on the host
       # @param [String] The destination file path on the guest
       # @return [Boolean] True if the file is missing or out of date
@@ -341,35 +341,35 @@ module Kitchen
         logger.debug("comparing #{local} to #{remote}")
         local_md5 = Digest::MD5.file(local).hexdigest
         command = <<-EOH
-$dest_file_path = [System.IO.Path]::GetFullPath('#{remote}')
+          $dest_file_path = [System.IO.Path]::GetFullPath('#{remote}')
 
-if (Test-Path $dest_file_path) {
-  $crypto_prov = new-object -TypeName System.Security.Cryptography.MD5CryptoServiceProvider
-  try {
-    $file = [System.IO.File]::Open($dest_file_path,
-      [System.IO.Filemode]::Open, [System.IO.FileAccess]::Read)
-    $guest_md5 = ([System.BitConverter]::ToString($crypto_prov.ComputeHash($file)))
-    $guest_md5 = $guest_md5.Replace("-","").ToLower()
-  }
-  finally {
-    $file.Dispose()
-  }
-  if ($guest_md5 -eq '#{local_md5}') {
-    exit 0
-  }
-}
-remove-item $dest_file_path -Force
-exit 1
+          if (Test-Path $dest_file_path) {
+            $crypto_prov = new-object -TypeName System.Security.Cryptography.MD5CryptoServiceProvider
+            try {
+              $file = [System.IO.File]::Open($dest_file_path,
+                [System.IO.Filemode]::Open, [System.IO.FileAccess]::Read)
+              $guest_md5 = ([System.BitConverter]::ToString($crypto_prov.ComputeHash($file)))
+              $guest_md5 = $guest_md5.Replace("-","").ToLower()
+            }
+            finally {
+              $file.Dispose()
+            }
+            if ($guest_md5 -eq '#{local_md5}') {
+              exit 0
+            }
+          }
+          remove-item $dest_file_path -Force
+          exit 1
         EOH
         powershell(command, shell_id)[:exitcode] == 1
       end
 
-      # Uploads the given file to a new temp file on the guest
+      # Uploads the given file to the guest
       #
+      # @param [String] The id of a shell instance to run the command from
       # @param [String] The source file path on the host
       # @return [String] The temp file path on the guest
-      def upload_to_temp_file(shell_id, local, remote)
-        #tmp_file_path = File.join(guest_temp_dir, "winrm-upload-#{rand}")
+      def upload_to_remote(shell_id, local, remote)
         logger.debug("Uploading '#{local}' to temp file '#{remote}'")
         base64_host_file = Base64.encode64(IO.binread(local)).gsub("\n", "")
         base64_host_file.chars.to_a.each_slice(8000 - remote.size) do |chunk|
@@ -380,6 +380,7 @@ exit 1
 
       # Recursively uploads the given directory from the host to the guest
       #
+      # @param [String] The id of a shell instance to run the command from
       # @param [String] The source file or directory path on the host
       # @param [String] The destination file or directory path on the host
       def upload_directory(shell_id, local, remote)
@@ -406,7 +407,6 @@ exit 1
         archive
       end
 
-
       def extract_zip(remote_zip, local, shell_id)
         logger.debug("extracting #{remote_zip} to #{remote_zip.gsub('/','\\').gsub('.zip','')}")
         command = <<-EOH
@@ -427,9 +427,10 @@ exit 1
       # Moves and decodes the given file temp file on the guest to its
       # permanent location
       #
+      # @param [String] The id of a shell instance to run the command from
       # @param [String] The source base64 encoded temp file path on the guest
       # @param [String] The destination file path on the guest
-      def decode_temp_file(shell_id, local, remote)
+      def decode_remote_file(shell_id, local, remote)
         logger.debug("Decoding temp file '#{remote}'")
         command = <<-EOH
           $tmp_file_path = [System.IO.Path]::GetFullPath('#{remote}')
@@ -443,24 +444,6 @@ exit 1
         EOH
         output = powershell(command, shell_id)
         raise_upload_error_if_failed(output, local, remote)
-      end
-
-      # Creates a guest file path equivalent from a host file path
-      #
-      # @param [String] The base host directory we're going to copy from
-      # @param [String] The base guest directory we're going to copy to
-      # @param [String] A full path to a file on the host underneath local
-      # @return [String] The guest file path equivalent
-      def remote_file_path(local, remote, local_file_path)
-        relative_path = File.dirname(local_file_path[local.length, local_file_path.length])
-        File.join(remote, File.basename(local), relative_path, File.basename(local_file_path))
-      end
-
-      # Get the guest temporal path to upload temporal files
-      #
-      # @return [String] The guest temp path
-      def guest_temp_dir
-        @guest_temp ||= (cmd("echo %TEMP%"))[:data][0][:stdout].chomp
       end
 
       def raise_upload_error_if_failed(output, from, to)
