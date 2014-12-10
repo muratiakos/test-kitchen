@@ -119,6 +119,7 @@ module Kitchen
       when "powershell"
         cmd = <<-CMD.gsub(/^ {10}/, "")
           #{busser_setup_env}
+
           if ((gem list busser -i) -eq \"false\") {
             gem install #{gem_install_args}
           }
@@ -363,12 +364,9 @@ module Kitchen
       when "powershell"
         [
           %{$env:BUSSER_ROOT="#{config[:root_path]}";},
-          %{$env:GEM_HOME="#{config[:root_path]}/gems";},
-          %{$env:GEM_PATH="#{config[:root_path]}/gems";},
-          %{$env:PATH="$env:PATH;$env:GEM_PATH/bin";},
+          %{$env:PATH="$env:PATH;/opscode/chef/embedded/bin";},
           %{try { $env:BUSSER_SUITE_PATH=@(#{@config[:busser_bin]} suite path) }},
-          %{catch { $env:BUSSER_SUITE_PATH="" };},
-          %{$env:GEM_CACHE="#{config[:root_path]}/gems/cache"}
+          %{catch { $env:BUSSER_SUITE_PATH="" };}
         ].join(" ")
       else
         raise "[#{self}] Unsupported shell: #{shell}"
