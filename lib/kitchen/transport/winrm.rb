@@ -28,6 +28,7 @@ if defined?(WinRM).nil?
 end
 
 require "logger"
+require 'pry'
 
 require "kitchen/errors"
 require "kitchen/login_command"
@@ -327,6 +328,7 @@ module Kitchen
           end
           logger.debug("Finished '#{remote}' Thread: #{Thread.current}")
         end
+        #binding.pry
       end
 
       # Checks to see if the target file on the guest is missing or out of date.
@@ -351,12 +353,18 @@ if (Test-Path $dest_file_path) {
     $file.Dispose()
   }
   if ($guest_md5 -eq '#{local_md5}') {
-    exit 0
+    [Environment]::ExitCode = 0
+    return 0
   }
 }
-exit 1
+[Environment]::ExitCode = 1
+return 1
         EOH
-        powershell(command)[:exitcode] == 1
+        result = powershell(command)
+        #should = (powershell(command)[:exitcode] == 1)
+        should = (result[:data][0][:stdout] == "1")
+        #binding.pry
+        should
       end
 
       # Uploads the given file to a new temp file on the guest
@@ -410,6 +418,7 @@ exit 1
           [System.IO.File]::WriteAllBytes($dest_file_path, $bytes)
         EOH
         raise_upload_error_if_failed(output, local, remote)
+        ##binding.pry
       end
 
       # Creates a guest file path equivalent from a host file path
