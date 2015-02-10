@@ -414,6 +414,7 @@ module Kitchen
         ].join(" ")
       when "powershell"
         [
+          %{Set-ExecutionPolicy RemoteSigned},
           %{$env:BUSSER_ROOT="#{config[:root_path]}";},
           %{$env:PATH="$env:PATH;/opscode/chef/embedded/bin";},
           %{try { $env:BUSSER_SUITE_PATH=@(#{@config[:busser_bin]} suite path) }},
