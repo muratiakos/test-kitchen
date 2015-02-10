@@ -20,6 +20,7 @@ require "thor/util"
 
 require "kitchen/lazy_hash"
 
+
 module Kitchen
 
   module Driver
@@ -86,14 +87,23 @@ module Kitchen
         end
       end
 
-      # Verifies a converged instance.
+      # Uploads latest test files and verifies a converged instance.
       #
       # @param state [Hash] mutable instance and driver state
       # @raise [ActionFailed] if the action could not be completed
       def verify(state)
         transport.connection(state) do |conn|
+
+          conn.execute(busser.cleanup_cmd)
+
+          busser.sync_files.each do |file|
+            conn.upload!(file[:local], file[:remote])
+          end
+
           conn.execute(busser.sync_cmd)
           conn.execute(busser.run_cmd)
+
+          conn.execute(busser.cleanup_cmd)
         end
       end
 

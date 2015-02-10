@@ -56,6 +56,8 @@ module Kitchen
       @config[:root_path] = opts.fetch(:root_path, DEFAULT_ROOT_PATH)
       @config[:version] = opts.fetch(:version, "busser")
       @config[:busser_bin] = opts.fetch(:busser_bin, File.join(@config[:root_path], "bin/busser"))
+      @config[:remote_transfer_path] = File.join(config[:root_path],'transfer')
+      @config[:local_transfer_path] = nil
     end
 
     # Returns the name of this busser, suitable for display in a CLI.
@@ -87,6 +89,50 @@ module Kitchen
       result = Hash.new
       config_keys.sort.each { |k| result[k] = config[k] }
       result
+    end
+
+    # Clears local and constructs a remote command to clean-up busser transfer directory
+    #
+    # @return [string] a shell transfer specific directory delete command
+    def cleanup_cmd
+      #Empty the previous local transfer folder
+      FileUtils.rm_rf(config[:local_transfer_path]) if config[:local_transfer_path]
+
+      case shell
+      when "bourne"
+        cmd = <<-CMD.gsub(/^ {10}/, "")
+          rmdir -rf #{config[:remote_transfer_path]}
+        CMD
+      when "powershell"
+        cmd = <<-CMD.gsub(/^ {10}/, "")
+          rmdir -Recurse -Force -ea 0 #{config[:remote_transfer_path]} | out-null
+          exit 0
+        CMD
+      else
+        raise "[#{self}] Unsupported shell: #{shell}"
+      end
+      Util.wrap_command(cmd, shell)
+    end
+
+    # Prepare function to prepare busser test files for a transfer
+    #
+    # @return [Hash] a hash list of local transfer files with its remote target directory
+    def sync_files
+      # Initialize a new transfer folder
+      config[:local_transfer_path] = Dir.mktmpdir("#{instance.name}-busser-transfer")
+
+      fileList=Array.new
+      local_suite_files.each do |f|
+        raw_content = IO.read(f)
+        md5 = Digest::MD5.hexdigest(raw_content)
+        remote_dir = config[:remote_transfer_path]
+        temp_file = File.join(config[:local_transfer_path],md5)
+        encoded_content = Base64.encode64(raw_content).gsub("\n", "")
+        IO.binwrite(temp_file,encoded_content)
+
+        fileList.push({local: temp_file , remote: remote_dir})
+      end
+      fileList
     end
 
     # Returns a command string which installs Busser, and installs all
@@ -204,6 +250,8 @@ module Kitchen
     DEFAULT_RUBY_BINDIR = "/opt/chef/embedded/bin".freeze
     DEFAULT_ROOT_PATH = "/tmp/busser".freeze
 
+    BUSSER_TRANSFER_PATH = nil
+
     # Loads any needed dependencies
     #
     # @raise [ClientError] if any library loading fails or any of the
@@ -312,8 +360,11 @@ module Kitchen
     # @api private
     def stream_file(local_path, remote_path)
       local_file = IO.read(local_path)
-      encoded_file = Base64.encode64(local_file).gsub("\n", "")
+
+      #encoded_file = Base64.encode64(local_file).gsub("\n", "")
       md5 = Digest::MD5.hexdigest(local_file)
+      transfer_path = File.join(File.join(config[:root_path],'transfer'),md5)
+
       perms = format("%o", File.stat(local_path).mode)[2, 4]
       stream_cmd = [
         sudo(config[:busser_bin]),
@@ -325,7 +376,7 @@ module Kitchen
 
       [
         %{echo "Uploading #{remote_path} (mode=#{perms})"},
-        %{echo "#{encoded_file}" | #{stream_cmd}}
+        %{cat "#{transfer_path}" | #{stream_cmd}}
       ].join("\n").concat("\n")
     end
 
