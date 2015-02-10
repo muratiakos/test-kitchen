@@ -165,7 +165,10 @@ module Kitchen
       when "powershell"
         cmd = <<-CMD.gsub(/^ {10}/, "")
           #{busser_setup_env}
+          echo 'Cleaning up busser...'
+          gem uninstall #{plugins.join(" ")}
 
+          echo 'Setting up busser...'
           if ((gem list busser -i) -eq \"false\") {
             gem install #{gem_install_args}
           }
@@ -414,7 +417,6 @@ module Kitchen
         ].join(" ")
       when "powershell"
         [
-          %{Set-ExecutionPolicy RemoteSigned},
           %{$env:BUSSER_ROOT="#{config[:root_path]}";},
           %{$env:PATH="$env:PATH;/opscode/chef/embedded/bin";},
           %{try { $env:BUSSER_SUITE_PATH=@(#{@config[:busser_bin]} suite path) }},
