@@ -28,10 +28,9 @@ if defined?(WinRM).nil?
 end
 
 require "logger"
-require 'pry'
-
 require "kitchen/errors"
 require "kitchen/login_command"
+
 module Kitchen
 
   module Transport
@@ -328,7 +327,6 @@ module Kitchen
           end
           logger.debug("Finished '#{remote}' Thread: #{Thread.current}")
         end
-        #binding.pry
       end
 
       # Checks to see if the target file on the guest is missing or out of date.
@@ -361,9 +359,7 @@ if (Test-Path $dest_file_path) {
 return 1
         EOH
         result = powershell(command)
-        #should = (powershell(command)[:exitcode] == 1)
         should = (result[:data][0][:stdout] == "1")
-        #binding.pry
         should
       end
 
@@ -418,7 +414,6 @@ return 1
           [System.IO.File]::WriteAllBytes($dest_file_path, $bytes)
         EOH
         raise_upload_error_if_failed(output, local, remote)
-        ##binding.pry
       end
 
       # Creates a guest file path equivalent from a host file path
