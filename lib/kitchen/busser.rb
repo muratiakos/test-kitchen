@@ -114,7 +114,7 @@ module Kitchen
       Util.wrap_command(cmd, shell)
     end
 
-    # Prepare function to prepare busser test files for a transfer
+    # Prepare busser test files to be transferred to the target system
     #
     # @return [Hash] a hash list of local transfer files with its remote target directory
     def sync_files
