@@ -78,6 +78,8 @@ module Kitchen
 
       # (see Base#upload!)
       def upload!(local, remote)
+        return if local.nil? || local.empty?
+
         logger.info("Concurrent threads set to :max_threads => #{config[:max_threads]}")
         logger.debug("Upload: #{local} -> #{remote}")
         local = Array.new(1) { local } if local.is_a? String
