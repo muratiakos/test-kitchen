@@ -56,7 +56,7 @@ module Kitchen
       @config[:root_path] = opts.fetch(:root_path, DEFAULT_ROOT_PATH)
       @config[:version] = opts.fetch(:version, "busser")
       @config[:busser_bin] = opts.fetch(:busser_bin, File.join(@config[:root_path], "bin/busser"))
-      @config[:remote_transfer_path] = File.join(config[:root_path],'transfer')
+      @config[:remote_transfer_path] = opts.fetch(:remote_transfer_path, File.join(@config[:root_path], "transfer"))
       @config[:local_transfer_path] = nil
     end
 
@@ -100,9 +100,12 @@ module Kitchen
 
       case shell
       when "bourne"
-        cmd = <<-CMD.gsub(/^ {10}/, "")
-          rmdir -rf #{config[:remote_transfer_path]}
-        CMD
+        cmd = [
+          sudo("rm -rf #{config[:remote_transfer_path]}"),
+          sudo("mkdir -p #{config[:remote_transfer_path]}"),
+          sudo("chmod 777 #{config[:remote_transfer_path]}")
+        ].join("\n").concat("\n").gsub(/^ {10}/, '')
+
       when "powershell"
         cmd = <<-CMD.gsub(/^ {10}/, "")
           rmdir -Recurse -Force -ea 0 #{config[:remote_transfer_path]} | out-null
@@ -121,18 +124,18 @@ module Kitchen
       # Initialize a new transfer folder
       config[:local_transfer_path] = Dir.mktmpdir("#{instance.name}-busser-transfer")
 
-      fileList=Array.new
+      transfer_list = []
       local_suite_files.each do |f|
         raw_content = IO.read(f)
         md5 = Digest::MD5.hexdigest(raw_content)
         remote_dir = config[:remote_transfer_path]
-        temp_file = File.join(config[:local_transfer_path],md5)
-        encoded_content = Base64.encode64(raw_content).gsub("\n", "")
-        IO.binwrite(temp_file,encoded_content)
+        temp_file = File.join(config[:local_transfer_path], md5)
+        encoded_content = Base64.encode64(raw_content).gsub("\n", '')
+        IO.binwrite(temp_file, encoded_content)
 
-        fileList.push({local: temp_file , remote: remote_dir})
+        transfer_list.push({local: temp_file , remote: remote_dir})
       end
-      fileList
+      transfer_list
     end
 
     # Returns a command string which installs Busser, and installs all
@@ -252,8 +255,6 @@ module Kitchen
 
     DEFAULT_RUBY_BINDIR = "/opt/chef/embedded/bin".freeze
     DEFAULT_ROOT_PATH = "/tmp/busser".freeze
-
-    BUSSER_TRANSFER_PATH = nil
 
     # Loads any needed dependencies
     #

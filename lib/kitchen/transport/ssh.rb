@@ -46,6 +46,8 @@ module Kitchen
 
       # (see Base#upload!)
       def upload!(local, remote, options = {}, &progress)
+        return if local.nil? || local.empty?
+        
         options = { :recursive => true }.merge(options)
 
         if progress.nil?
@@ -56,6 +58,8 @@ module Kitchen
           }
         end
 
+
+        local = Array.new(1) { local } if local.is_a? String
         local.each do |path|
           session.scp.upload!(path, remote, options, &progress)
         end
